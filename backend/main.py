@@ -1416,6 +1416,39 @@ def _resolve_technique(technique: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helper — synthetic "clean" metrics for features that were encoded away
+# ---------------------------------------------------------------------------
+
+def _make_clean_metrics(feature: str, dtype: str = "categorical") -> dict[str, Any]:
+    """Return a metrics dict with all bias norms zeroed out.
+
+    Used when a feature column no longer exists in the DataFrame (e.g. after
+    one-hot encoding replaced it with dummy columns).
+    """
+    return {
+        "dtype": dtype,
+        "jsd": 0.0,
+        "test": "chi2" if dtype == "categorical" else "ttest",
+        "test_stat": 0.0,
+        "p_value": 1.0,
+        "effect_size": 0.0,
+        "effect_label": "cramers_v" if dtype == "categorical" else "cohens_d",
+        "skew_by_class": {},
+        "kurt_by_class": {},
+        "skew_diff": 0.0,
+        "kurt_diff": 0.0,
+        "missingness_by_class": {},
+        "missingness_gap": 0.0,
+        "norm_jsd": 0.0,
+        "norm_effect": 0.0,
+        "norm_skew": 0.0,
+        "norm_miss": 0.0,
+        "norm_pval": 0.0,
+        "feature_bias": 0.0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Suggestion logic — picks techniques based on worst bias metric
 # ---------------------------------------------------------------------------
 
@@ -1432,7 +1465,22 @@ def _suggest_for_feature(
     analysis = baseline_bias_analysis(df, target_column)
     fm = analysis["feature_metrics"].get(feature)
     if fm is None:
-        return {"error": f"Feature '{feature}' not in analysis."}
+        # Feature was likely encoded away (e.g. one-hot) — fully cleaned
+        return {
+            "feature": feature,
+            "dtype": "categorical",
+            "worstMetric": "chi_squared",
+            "worstMetricValue": 0,
+            "currentMetrics": _make_clean_metrics(feature),
+            "norms": {
+                "p_value": 0,
+                "js_divergence": 0,
+                "chi_squared": 0,
+                "missingness_rate": 0,
+                "skewness": 0,
+            },
+            "suggestions": [],
+        }
 
     has_nulls = int(df[feature].isna().sum()) > 0
     null_count = int(df[feature].isna().sum())
@@ -1564,6 +1612,34 @@ def _suggest_for_feature(
                 "Strips proxy-bias while preserving residual variance for modeling."
             ),
             "isHero": True,
+            "targetMetric": "chi_squared",
+            "targetMetricLabel": "Chi-Squared / Effect Size",
+        })
+
+    # ── Categorical-only techniques ───────────────────────────────
+    if not is_numeric:
+        n_unique = int(df[feature].nunique())
+        suggestions.append({
+            "technique": "one_hot_encode",
+            "label": "One-Hot Encoding",
+            "category": "Encoding",
+            "description": (
+                f"Convert '{feature}' ({n_unique} categories) into {n_unique} binary indicator "
+                f"columns. Enables numeric models to use this feature without ordinal assumptions."
+            ),
+            "isHero": True,
+            "targetMetric": "chi_squared",
+            "targetMetricLabel": "Chi-Squared / Effect Size",
+        })
+        suggestions.append({
+            "technique": "ordinal_encode",
+            "label": "Ordinal Encoding",
+            "category": "Encoding",
+            "description": (
+                f"Map '{feature}' ({n_unique} categories) to integers 0–{n_unique - 1}. "
+                f"Compact but implies an order between categories."
+            ),
+            "isHero": False,
             "targetMetric": "chi_squared",
             "targetMetricLabel": "Chi-Squared / Effect Size",
         })
@@ -1712,7 +1788,11 @@ def clean_preview():
         return jsonify({"error": str(e)})
 
     after_analysis = baseline_bias_analysis(df_after, target_column)
-    after_fm = after_analysis["feature_metrics"].get(feature, {})
+    after_fm = after_analysis["feature_metrics"].get(feature)
+    if after_fm is None:
+        # Feature was encoded away — use synthetic clean metrics
+        orig_dtype = before_fm.get("dtype", "categorical") if before_fm else "categorical"
+        after_fm = _make_clean_metrics(feature, orig_dtype)
     after_score = after_analysis["overall_score"]
 
     return jsonify(_sanitize({
@@ -1762,7 +1842,10 @@ def clean_commit():
     analysis = baseline_bias_analysis(
         session["training_data"], session["target_column"],
     )
-    fm = analysis["feature_metrics"].get(feature, {})
+    fm = analysis["feature_metrics"].get(feature)
+    if fm is None:
+        # Feature was encoded away — use synthetic clean metrics
+        fm = _make_clean_metrics(feature)
 
     return jsonify(_sanitize({
         "feature": feature,
@@ -1785,9 +1868,23 @@ def clean_revert():
         return jsonify({"error": "Session not found."})
 
     orig = session["original_df"]
+    td = session["training_data"]
+
+    # Remove one-hot encoded dummy columns created from this feature
+    dummy_cols = [c for c in td.columns if c.startswith(f"{feature}_") and c not in orig.columns]
+    if dummy_cols:
+        td = td.drop(columns=dummy_cols)
 
     if feature in orig.columns:
-        session["training_data"][feature] = orig[feature].copy()
+        if feature not in td.columns:
+            # Re-insert the original column at its original position
+            orig_idx = list(orig.columns).index(feature)
+            insert_idx = min(orig_idx, len(td.columns))
+            td.insert(insert_idx, feature, orig[feature].copy())
+        else:
+            td[feature] = orig[feature].copy()
+
+    session["training_data"] = td
 
     # Remove auto-created indicator column
     indicator = f"{feature}_missing"
@@ -2333,4 +2430,4 @@ def explain_model():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8001, debug=True)
+    app.run(host="0.0.0.0", port=8001, debug=True, use_reloader=False)

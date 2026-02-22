@@ -71,23 +71,25 @@ const METRIC_TOOLTIPS: Record<string, string> = {
 };
 
 function normValue(fm: FeatureMetrics, key: string): number {
+  if (!fm) return 0;
   switch (key) {
-    case 'p_value': return fm.norm_pval;
-    case 'js_divergence': return fm.norm_jsd;
-    case 'chi_squared': return fm.norm_effect;
-    case 'missingness_rate': return fm.norm_miss;
-    case 'skewness': return fm.norm_skew;
+    case 'p_value': return fm.norm_pval ?? 0;
+    case 'js_divergence': return fm.norm_jsd ?? 0;
+    case 'chi_squared': return fm.norm_effect ?? 0;
+    case 'missingness_rate': return fm.norm_miss ?? 0;
+    case 'skewness': return fm.norm_skew ?? 0;
     default: return 0;
   }
 }
 
 function rawValue(fm: FeatureMetrics, key: string): string {
+  if (!fm) return '—';
   switch (key) {
-    case 'p_value': return fm.p_value < 0.001 ? '< 0.001' : fm.p_value.toFixed(4);
-    case 'js_divergence': return fm.jsd.toFixed(4);
-    case 'chi_squared': return fm.effect_size.toFixed(3);
-    case 'missingness_rate': return `${(fm.missingness_gap * 100).toFixed(1)}%`;
-    case 'skewness': return fm.skew_diff.toFixed(3);
+    case 'p_value': return (fm.p_value ?? 0) < 0.001 ? '< 0.001' : (fm.p_value ?? 0).toFixed(4);
+    case 'js_divergence': return (fm.jsd ?? 0).toFixed(4);
+    case 'chi_squared': return (fm.effect_size ?? 0).toFixed(3);
+    case 'missingness_rate': return `${((fm.missingness_gap ?? 0) * 100).toFixed(1)}%`;
+    case 'skewness': return (fm.skew_diff ?? 0).toFixed(3);
     default: return '—';
   }
 }
@@ -99,7 +101,8 @@ function verdict(norm: number) {
 }
 
 function featureBiasScore(fm: FeatureMetrics): number {
-  return Math.round((1 - fm.feature_bias) * 100);
+  if (!fm) return 100;
+  return Math.round((1 - (fm.feature_bias ?? 0)) * 100);
 }
 
 function featureHealthLabel(score: number): { label: string; color: string } {
@@ -391,11 +394,11 @@ export default function Stage2Clean() {
     const fms = featureStates.map(f => f.metrics);
     const n = fms.length || 1;
     const currentSubScores = {
-      js_divergence: fms.reduce((s, m) => s + m.norm_jsd, 0) / n,
-      chi2_effect: fms.reduce((s, m) => s + m.norm_effect, 0) / n,
-      skew_diff: fms.reduce((s, m) => s + m.norm_skew, 0) / n,
-      missingness_gap: fms.reduce((s, m) => s + m.norm_miss, 0) / n,
-      p_value: fms.reduce((s, m) => s + m.norm_pval, 0) / n,
+      js_divergence: fms.reduce((s, m) => s + (m?.norm_jsd ?? 0), 0) / n,
+      chi2_effect: fms.reduce((s, m) => s + (m?.norm_effect ?? 0), 0) / n,
+      skew_diff: fms.reduce((s, m) => s + (m?.norm_skew ?? 0), 0) / n,
+      missingness_gap: fms.reduce((s, m) => s + (m?.norm_miss ?? 0), 0) / n,
+      p_value: fms.reduce((s, m) => s + (m?.norm_pval ?? 0), 0) / n,
     };
     setGateResult(computeGateResult(baselineBias?.sub_scores, currentSubScores));
     unlockStage(3);
